@@ -60,6 +60,8 @@ const DEFAULT_RESOLUTION: u32 = 2048;
 #[cfg(target_arch = "wasm32")]
 const DEFAULT_RESOLUTION: u32 = 1024;
 
+const PRESET_VERSION: u32 = 2;
+
 pub enum GuiMode {
     Transform,
     Draw,
@@ -150,6 +152,7 @@ pub struct AhmetKayaifyApp {
     jfa_bg_b_to_a: wgpu::BindGroup,
     shade_bg: wgpu::BindGroup,
     preview_image: Option<image::ImageBuffer<image::Rgb<u8>, Vec<u8>>>,
+    pending_preset_index: Option<usize>,
     stroke_count: u32,
 
     frame_count: u32,
@@ -231,6 +234,7 @@ impl AhmetKayaifyApp {
         sim.prepare_play(&mut seeds, self.reverse);
         self.apply_sim_init(device, queue, seed_count, seeds, colors, sim);
         self.gui.current_preset = change_index;
+        self.ensure_preset_generated(device, change_index);
     }
 
     pub fn canvas_sim(
@@ -255,7 +259,12 @@ impl AhmetKayaifyApp {
 
         // get all folders in ../presets
         let presets: Vec<Preset> = if let Some(storage) = cc.storage {
-            eframe::get_value(storage, "presets").unwrap_or(get_presets())
+            let stored_version: Option<u32> = eframe::get_value(storage, "preset_version");
+            if stored_version == Some(PRESET_VERSION) {
+                eframe::get_value(storage, "presets").unwrap_or(get_presets())
+            } else {
+                get_presets()
+            }
         } else {
             get_presets()
         };
@@ -789,6 +798,7 @@ impl AhmetKayaifyApp {
             progress_rx,
             gif_recorder: gif_recorder::GifRecorder::new(),
             preview_image: None,
+            pending_preset_index: None,
             stroke_count: 0,
             gui: gui::GuiState::default(presets, random_preset, has_ahmet_kayaified_once),
             frame_count: 0,
@@ -801,6 +811,73 @@ impl AhmetKayaifyApp {
             current_filter_mode: wgpu::FilterMode::Linear,
 
             reverse: false,
+        }
+    }
+
+    fn ensure_preset_generated(
+        &mut self,
+        device: &wgpu::Device,
+        preset_index: usize,
+    ) {
+        if self.gui.show_progress_modal.is_some() || self.pending_preset_index.is_some() {
+            return;
+        }
+
+        let Some(preset) = self.gui.presets.get(preset_index) else {
+            return;
+        };
+        let expected = (preset.inner.width * preset.inner.height) as usize;
+        if preset.assignments.len() == expected {
+            return;
+        }
+
+        let mut settings = GenerationSettings::default(Uuid::new_v4(), preset.inner.name.clone());
+        settings.sidelen = preset.inner.width;
+        settings.proximity_importance =
+            (settings.proximity_importance as f32 / (settings.sidelen as f32 / 128.0)) as i64;
+
+        let unprocessed = UnprocessedPreset {
+            name: preset.inner.name.clone(),
+            width: preset.inner.width,
+            height: preset.inner.height,
+            source_img: preset.inner.source_img.clone(),
+        };
+
+        self.gui.show_progress_modal(settings.id);
+        self.gui
+            .process_cancelled
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.gui.last_progress = 0.0;
+        self.preview_image = None;
+        self.resize_textures(device, (settings.sidelen, settings.sidelen), false);
+        self.pending_preset_index = Some(preset_index);
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.start_job(unprocessed, settings);
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::thread::spawn({
+                let tx = self.progress_tx.clone();
+                let cancelled = self.gui.process_cancelled.clone();
+                move || {
+                    let result = calculate::process(unprocessed, settings, &mut tx.clone(), cancelled);
+                    if let Err(err) = result {
+                        tx.send(ProgressMsg::Error(err.to_string())).ok();
+                    }
+                }
+            });
+        }
+    }
+
+    fn mark_preset_identity(&mut self, preset_index: usize) {
+        if let Some(preset) = self.gui.presets.get_mut(preset_index) {
+            let expected = (preset.inner.width * preset.inner.height) as usize;
+            if preset.assignments.len() != expected {
+                preset.assignments = (0..expected).collect();
+            }
         }
     }
 
@@ -1561,11 +1638,34 @@ impl AhmetKayaifyApp {
 
         let colors = self.colors.read().unwrap();
         let pixel_data = self.pixeldata.read().unwrap();
-        let max_swaps = (self.seed_count as usize).clamp(2_000, 20_000);
+        let max_swaps = (self.seed_count as usize)
+            .saturating_mul(4)
+            .clamp(10_000, 80_000);
+        let mut latest = None;
 
-        if let Some(assignments) =
-            state.step(&colors, &pixel_data, self.frame_count, max_swaps)
-        {
+        let time_budget_ms = 6.0;
+        let start = web_sys::window()
+            .and_then(|w| w.performance())
+            .map(|p| p.now())
+            .unwrap_or(0.0);
+
+        loop {
+            if let Some(assignments) =
+                state.step(&colors, &pixel_data, self.frame_count, max_swaps)
+            {
+                latest = Some(assignments);
+            }
+
+            let now = web_sys::window()
+                .and_then(|w| w.performance())
+                .map(|p| p.now())
+                .unwrap_or(start + time_budget_ms);
+            if now - start >= time_budget_ms {
+                break;
+            }
+        }
+
+        if let Some(assignments) = latest {
             self.sim.set_assignments(assignments, self.size.0);
         }
     }
@@ -1714,7 +1814,8 @@ impl AhmetKayaifyApp {
             .unwrap()
             .to_rgba8();
 
-        let settings = GenerationSettings::default(Uuid::new_v4(), "canvas".to_string());
+        let mut settings = GenerationSettings::default(Uuid::new_v4(), "canvas".to_string());
+        settings.proximity_importance = 8;
         let source = UnprocessedPreset {
             name: "canvas".to_string(),
             width: blank.width(),
@@ -1825,15 +1926,7 @@ macro_rules! include_presets {
                             height: img.height(),
                             source_img: img.into_raw(),
                         },
-                        assignments: include_str!(concat!("../presets/", $name, "/assignments.json"))
-                            .to_string()
-                            .strip_prefix('[')
-                            .unwrap()
-                            .strip_suffix(']')
-                            .unwrap()
-                            .split(',')
-                            .map(|s| s.parse().unwrap())
-                            .collect::<Vec<usize>>(),
+                        assignments: Vec::new(),
                     }
                 }),*
             ]

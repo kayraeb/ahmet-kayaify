@@ -42,9 +42,9 @@ pub(crate) struct GuiState {
     mode: GuiMode,
     pub animate: bool,
     //pub fps_text: String,
-    show_progress_modal: Option<Uuid>,
-    last_progress: f32,
-    process_cancelled: Arc<AtomicBool>,
+    pub(crate) show_progress_modal: Option<Uuid>,
+    pub(crate) last_progress: f32,
+    pub(crate) process_cancelled: Arc<AtomicBool>,
     //pub currently_processing: Option<Preset>,
     pub presets: Vec<Preset>,
     //pub current_settings: GenerationSettings,
@@ -82,7 +82,7 @@ impl GuiState {
         }
     }
 
-    fn show_progress_modal(&mut self, id: Uuid) {
+    pub(crate) fn show_progress_modal(&mut self, id: Uuid) {
         self.show_progress_modal = Some(id);
         #[cfg(target_arch = "wasm32")]
         hide_icons();
@@ -133,6 +133,7 @@ impl App for AhmetKayaifyApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, "presets", &self.gui.presets);
         eframe::set_value(storage, "has_ahmet_kayaified_once", &self.gui.has_ahmet_kayaified_once);
+        eframe::set_value(storage, "preset_version", &super::PRESET_VERSION);
     }
     fn update(&mut self, ctx: &egui::Context, frame: &mut Frame) {
         let Some(rs) = frame.wgpu_render_state() else {
@@ -162,6 +163,10 @@ impl App for AhmetKayaifyApp {
 
         #[cfg(target_arch = "wasm32")]
         self.ensure_worker(ctx);
+
+        if matches!(self.gui.mode, GuiMode::Transform) {
+            self.ensure_preset_generated(device, self.gui.current_preset);
+        }
 
         // Run GPU pipeline
         if let Some(img) = &self.preview_image {
@@ -813,14 +818,16 @@ impl App for AhmetKayaifyApp {
                                         (DEFAULT_RESOLUTION, DEFAULT_RESOLUTION),
                                         false,
                                     );
-                                    //self.gui.presets = get_presets();
-                                    self.gui.presets.push(new_preset.clone());
-                                    self.change_sim(
-                                        device,
-                                        &rs.queue,
-                                        new_preset,
-                                        self.gui.presets.len() - 1,
-                                    );
+                                    let preset_index = if let Some(idx) =
+                                        self.pending_preset_index.take()
+                                    {
+                                        self.gui.presets[idx] = new_preset.clone();
+                                        idx
+                                    } else {
+                                        self.gui.presets.push(new_preset.clone());
+                                        self.gui.presets.len() - 1
+                                    };
+                                    self.change_sim(device, &rs.queue, new_preset, preset_index);
                                     self.gui.animate = true;
                                     self.gui.has_ahmet_kayaified_once = true;
                                     self.gui.hide_progress_modal();
@@ -832,6 +839,9 @@ impl App for AhmetKayaifyApp {
                                 }
                                 ProgressMsg::Error(err) => {
                                     ui.label(format!("error: {}", err));
+                                    if let Some(idx) = self.pending_preset_index.take() {
+                                        self.mark_preset_identity(idx);
+                                    }
                                     if ui.button("close").clicked() {
                                         ui.close();
                                     }
@@ -851,6 +861,9 @@ impl App for AhmetKayaifyApp {
                                         (DEFAULT_RESOLUTION, DEFAULT_RESOLUTION),
                                         false,
                                     );
+                                    if let Some(idx) = self.pending_preset_index.take() {
+                                        self.mark_preset_identity(idx);
+                                    }
                                     self.gui.hide_progress_modal();
                                     ui.close();
                                 }
@@ -871,6 +884,9 @@ impl App for AhmetKayaifyApp {
 
                         ui.horizontal(|ui| {
                             if ui.button("cancel").clicked() {
+                                if let Some(idx) = self.pending_preset_index.take() {
+                                    self.mark_preset_identity(idx);
+                                }
                                 #[cfg(target_arch = "wasm32")]
                                 {
                                     if let Some(w) = &self.worker {

@@ -13,7 +13,12 @@ pub fn init_image(sidelen: u32, source: Preset) -> (u32, Vec<SeedPos>, Vec<SeedC
         source.inner.source_img,
     )
     .unwrap();
-    let assignments = source.assignments;
+    let expected = (source.inner.width * source.inner.height) as usize;
+    let assignments = if source.assignments.len() == expected {
+        source.assignments
+    } else {
+        (0..expected).collect()
+    };
 
     let (seeds, colors, seeds_n) = init_colors(sidelen, imgpath);
     let mut sim = Sim::new(source.inner.name);
