@@ -1676,12 +1676,6 @@ impl AhmetKayaifyApp {
 
     #[cfg(target_arch = "wasm32")]
     fn step_drawing_assignments(&mut self) {
-        let Some(state) = self.drawing_state.as_mut() else {
-            return;
-        };
-
-        let colors = self.colors.read().unwrap();
-        let pixel_data = self.pixeldata.read().unwrap();
         let t = self.drawing_settle_t();
         let params = self.current_drawing_params(t);
         let swap_scale = 1.0 + t * 1.5;
@@ -1689,6 +1683,12 @@ impl AhmetKayaifyApp {
             .round()
             .clamp(10_000.0, 120_000.0) as usize;
         let mut latest = None;
+        let Some(state) = self.drawing_state.as_mut() else {
+            return;
+        };
+
+        let colors = self.colors.read().unwrap();
+        let pixel_data = self.pixeldata.read().unwrap();
 
         let time_budget_ms = 6.0;
         let start = js_sys::Date::now();

@@ -1,6 +1,5 @@
 use crate::app::SeedColor;
 use crate::app::calculate;
-use crate::app::calculate::SWAPS_PER_GENERATION_PER_PIXEL;
 use crate::app::preset::UnprocessedPreset;
 
 use std::error::Error;
