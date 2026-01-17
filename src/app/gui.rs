@@ -247,7 +247,7 @@ impl App for AhmetKayaifyApp {
                 } else {
                     let sim_steps = if matches!(self.gui.mode, GuiMode::Draw) {
                         let t = self.drawing_settle_t();
-                        if t > 0.5 { 3 } else { 2 }
+                        if t > 0.4 { 2 } else { 1 }
                     } else {
                         1
                     };

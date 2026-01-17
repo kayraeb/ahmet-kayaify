@@ -71,9 +71,9 @@ const DRAW_MAX_DIST_DECAY: f32 = 0.995;
 const SETTLE_MAX_DIST_DECAY: f32 = 0.985;
 const DRAW_MIN_DIST: u32 = 4;
 const SETTLE_MIN_DIST: u32 = 3;
-const DRAW_GLOBAL_SWAP_PROB: f32 = 0.02;
-const SETTLE_GLOBAL_SWAP_PROB: f32 = 0.08;
-const DRAW_FORCE_FLOOR: f32 = 0.18;
+const DRAW_GLOBAL_SWAP_PROB: f32 = 0.006;
+const SETTLE_GLOBAL_SWAP_PROB: f32 = 0.03;
+const DRAW_FORCE_FLOOR: f32 = 0.12;
 
 pub enum GuiMode {
     Transform,
@@ -1690,15 +1690,15 @@ impl AhmetKayaifyApp {
     fn step_drawing_assignments(&mut self) {
         let t = self.drawing_settle_t();
         let params = self.current_drawing_params(t);
-        let swap_scale = 1.0 + (1.0 - t) * 2.0;
-        let max_swaps = ((self.seed_count as f32) * 2.0 * swap_scale)
+        let swap_scale = 1.0 + (1.0 - t) * 1.2;
+        let max_swaps = ((self.seed_count as f32) * 1.5 * swap_scale)
             .round()
-            .clamp(6_000.0, 80_000.0) as usize;
-        let min_swaps = ((self.seed_count as f32) * (0.002 + t * 0.004))
+            .clamp(5_000.0, 60_000.0) as usize;
+        let min_swaps = ((self.seed_count as f32) * (0.004 + t * 0.004))
             .round()
-            .max(32.0) as usize;
-        let min_gap: u32 = if t > 0.2 { 2 } else { 1 };
-        let max_gap: u32 = 12;
+            .max(64.0) as usize;
+        let min_gap: u32 = if t < 0.3 { 4 } else { 6 };
+        let max_gap: u32 = 20;
         let mut best: Option<calculate::drawing_process::DrawingStep> = None;
         let Some(state) = self.drawing_state.as_mut() else {
             return;
@@ -1707,7 +1707,7 @@ impl AhmetKayaifyApp {
         let colors = self.colors.read().unwrap();
         let pixel_data = self.pixeldata.read().unwrap();
 
-        let time_budget_ms = 8.0_f64 + (t as f64) * 4.0;
+        let time_budget_ms = 6.0_f64 + (t as f64) * 2.0;
         let start = js_sys::Date::now();
 
         loop {
@@ -1787,7 +1787,8 @@ impl AhmetKayaifyApp {
                 (*colors)[i].rgba[2] = blend((*colors)[i].rgba[2], color[2], alpha);
 
                 self.sim.cells[i].set_age(0);
-                let force = DRAW_FORCE_FLOOR + (stroke_id as f32 * 0.004).sqrt();
+                let force =
+                    (DRAW_FORCE_FLOOR + (stroke_id as f32 * 0.002).sqrt()).min(0.85);
                 self.sim.cells[i].set_dst_force(force);
                 self.sim.cells[i].set_stroke_id(stroke_id);
                 self.pixeldata.write().unwrap()[i] = calculate::drawing_process::PixelData {
