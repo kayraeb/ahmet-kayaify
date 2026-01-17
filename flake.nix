@@ -118,7 +118,7 @@
 
             meta = {
               description = "revolutionary new technology that turns any image into Ahmet Kaya";
-              homepage = "https://github.com/Spu7Nix/ahmetkayaify";
+              homepage = "https://github.com/kayraeb/ahmet-kayaify";
               license = pkgs.lib.licenses.mit;
               mainProgram = "ahmetkayaify";
             };

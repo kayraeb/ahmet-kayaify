@@ -1,7 +1,7 @@
 [package]
 name = "ahmetkayaify"
 version = "0.3.0"
-authors = ["Spu7Nix"]
+authors = ["kayraeb"]
 edition = "2024"
 include = ["LICENSE-MIT", "**/*.rs", "Cargo.toml"]
 rust-version = "1.85"
