@@ -1691,10 +1691,7 @@ impl AhmetKayaifyApp {
         let mut latest = None;
 
         let time_budget_ms = 6.0;
-        let start = web_sys::window()
-            .and_then(|w| w.performance())
-            .map(|p| p.now())
-            .unwrap_or(0.0);
+        let start = js_sys::Date::now();
 
         loop {
             if let Some(assignments) =
@@ -1703,10 +1700,7 @@ impl AhmetKayaifyApp {
                 latest = Some(assignments);
             }
 
-            let now = web_sys::window()
-                .and_then(|w| w.performance())
-                .map(|p| p.now())
-                .unwrap_or(start + time_budget_ms);
+            let now = js_sys::Date::now();
             if now - start >= time_budget_ms {
                 break;
             }
