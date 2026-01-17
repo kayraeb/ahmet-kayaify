@@ -1000,6 +1000,7 @@ impl App for AhmetKayaifyApp {
         if matches!(self.gui.mode, GuiMode::Draw) {
             #[cfg(target_arch = "wasm32")]
             self.step_drawing_assignments();
+            self.apply_pending_assignments();
 
             let number_keys = [
                 egui::Key::Num1,

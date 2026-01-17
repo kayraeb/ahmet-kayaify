@@ -169,6 +169,8 @@ pub struct AhmetKayaifyApp {
     stroke_count: u32,
     last_stroke_frame: u32,
     last_assignment_frame: u32,
+    pending_assignments: Option<Vec<usize>>,
+    pending_assignment_cursor: usize,
 
     frame_count: u32,
 
@@ -817,6 +819,8 @@ impl AhmetKayaifyApp {
             stroke_count: 0,
             last_stroke_frame: 0,
             last_assignment_frame: 0,
+            pending_assignments: None,
+            pending_assignment_cursor: 0,
             gui: gui::GuiState::default(presets, random_preset, has_ahmet_kayaified_once),
             frame_count: 0,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1731,10 +1735,42 @@ impl AhmetKayaifyApp {
         if let Some(step) = best {
             let since_last = self.frame_count.saturating_sub(self.last_assignment_frame);
             if (step.swaps_made >= min_swaps && since_last >= min_gap) || since_last >= max_gap {
-                self.sim.set_assignments(step.assignments, self.size.0);
+                self.queue_assignments(step.assignments);
                 self.sim.apply_dst_force_floor(DRAW_FORCE_FLOOR);
                 self.last_assignment_frame = self.frame_count;
             }
+        }
+    }
+
+    fn queue_assignments(&mut self, assignments: Vec<usize>) {
+        if self.pending_assignments.is_some() {
+            return;
+        }
+        self.pending_assignment_cursor = 0;
+        self.pending_assignments = Some(assignments);
+    }
+
+    fn apply_pending_assignments(&mut self) {
+        let Some(assignments) = self.pending_assignments.as_ref() else {
+            return;
+        };
+        let t = self.drawing_settle_t();
+        let chunk = if t < 0.3 { 256 } else { 512 };
+        let processed = self.sim.apply_assignments_range(
+            assignments,
+            self.size.0,
+            self.pending_assignment_cursor,
+            chunk,
+        );
+        if processed == 0 {
+            self.pending_assignments = None;
+            self.pending_assignment_cursor = 0;
+            return;
+        }
+        self.pending_assignment_cursor += processed;
+        if self.pending_assignment_cursor >= assignments.len() {
+            self.pending_assignments = None;
+            self.pending_assignment_cursor = 0;
         }
     }
 
