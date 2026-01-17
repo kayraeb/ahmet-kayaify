@@ -334,6 +334,14 @@ impl Sim {
         }
     }
 
+    pub fn apply_dst_force_floor(&mut self, min_force: f32) {
+        for cell in &mut self.cells {
+            if cell.dst_force < min_force {
+                cell.dst_force = min_force;
+            }
+        }
+    }
+
     pub fn set_assignments(&mut self, assignments: Vec<usize>, sidelen: u32) {
         let width = (self.cells.len() as f32).sqrt();
         let pixelsize = sidelen as f32 / width;

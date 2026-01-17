@@ -7,6 +7,13 @@ use uuid::Uuid;
 
 use std::error::Error;
 
+fn luma_u8(r: u8, g: u8, b: u8) -> u8 {
+    let r = r as u32;
+    let g = g as u32;
+    let b = b as u32;
+    ((r * 54 + g * 183 + b * 19) >> 8) as u8
+}
+
 // pub(crate) fn save_result(
 //     target: image::SourceImg,
 //     base_name: String,
@@ -164,7 +171,19 @@ impl GenerationSettings {
     pub fn get_target(&self) -> Result<(SourceImg, Vec<i64>), Box<dyn std::error::Error>> {
         let target = self.get_raw_target();
         let target = self.target_crop_scale.apply(&target, self.sidelen);
-        let weights = vec![255; (self.sidelen * self.sidelen) as usize]; // uniform weights
+        let blurred = imageops::blur(&target, 1.2);
+        let weights = target
+            .pixels()
+            .zip(blurred.pixels())
+            .map(|(p, b)| {
+                let luma = luma_u8(p[0], p[1], p[2]) as i64;
+                let blur_luma = luma_u8(b[0], b[1], b[2]) as i64;
+                let contrast = (luma - blur_luma).abs();
+                let extremeness = (luma - 128).abs();
+                let weight = 40 + (extremeness * 140 / 128) + (contrast * 80 / 255);
+                weight.clamp(32, 255)
+            })
+            .collect::<Vec<_>>();
 
         Ok((target, weights))
     }

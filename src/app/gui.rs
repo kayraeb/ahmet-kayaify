@@ -245,7 +245,15 @@ impl App for AhmetKayaifyApp {
                         Ok(false) => { /* not ready yet */ }
                     }
                 } else {
-                    self.sim.update(&mut self.seeds, self.size.0);
+                    let sim_steps = if matches!(self.gui.mode, GuiMode::Draw) {
+                        let t = self.drawing_settle_t();
+                        if t > 0.5 { 3 } else { 2 }
+                    } else {
+                        1
+                    };
+                    for _ in 0..sim_steps {
+                        self.sim.update(&mut self.seeds, self.size.0);
+                    }
                 }
                 rs.queue
                     .write_buffer(&self.seed_buf, 0, bytemuck::cast_slice(&self.seeds));
