@@ -1,0 +1,72 @@
+[package]
+name = "ahmetkayaify"
+version = "0.3.0"
+authors = ["Spu7Nix"]
+edition = "2024"
+include = ["LICENSE-MIT", "**/*.rs", "Cargo.toml"]
+rust-version = "1.85"
+
+[package.metadata.docs.rs]
+all-features = true
+targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
+
+[dependencies]
+egui = "0.32"
+eframe = { version = "0.32", default-features = false, features = [
+    # "accesskit",     # Make egui compatible with screen readers. NOTE: adds a lot of dependencies.
+    "default_fonts", # Embed the default egui fonts.
+    "wgpu",          # Use the wgpu rendering backend. Alternative: "glow".
+    "persistence",   # Enable restoring app state when restarting the app.
+    "wayland",       # To support Linux (and CI)
+    "x11",           # To support older Linux distributions (restores one of the default features)
+] }
+egui_extras = { version = "0.32", features = ["svg"] }
+log = "0.4.27"
+egui-wgpu = "0.32.1"
+wgpu = { version = "25.0", default-features = false, features = ["wgsl"] }
+bytemuck = { version = "1.16", features = ["derive"] }
+image = { version = "0.25.6", features = ["serde"] }
+
+palette = "0.7.6"
+pathfinding = "4.13.0"
+indexmap = "2.11.0"
+
+frand = "0.10.1"
+uuid = { version = "1.18.1", features = ["v4", "js", "serde"] }
+
+rfd = "0.15.4"
+
+gif = "0.13.3"
+futures-intrusive = "0.5.0"
+pollster = "0.4.0"
+color_quant = "1.1.0"
+opener = {version = "0.8.3", features = ["reveal"]}
+
+serde = { version = "1.0.219", features = ["derive"] }
+
+# native:
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger = "0.11.8"
+
+# web:
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4.50"
+web-sys = { version = "0.3.70", features = [
+  "DedicatedWorkerGlobalScope", "Worker", "WorkerOptions", "WorkerType", "MessageEvent", "ErrorEvent",
+  "HtmlScriptElement", "HtmlCollection", "Element", "NodeList", "Blob", "BlobPropertyBag", "Url", "Window", "Document",
+] }             # to access the DOM (to hide the loading text)
+# gloo = { version = "0.11.0", features = ["futures"] }
+serde-wasm-bindgen = "0.6"
+futures = "0.3.31"
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1.7"
+
+# Override wgpu for WASM to use only WebGL backend
+wgpu = { version = "25.0", features = ["webgl"] }
+
+[profile.release]
+opt-level = 3 # fast and small wasm
+
+# Optimize all dependencies even in debug builds:
+[profile.dev.package."*"]
+opt-level = 2

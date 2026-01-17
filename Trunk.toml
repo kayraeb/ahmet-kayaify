@@ -1,0 +1,4 @@
+[build]
+filehash = true
+dist = "docs"
+public-url = "./"
