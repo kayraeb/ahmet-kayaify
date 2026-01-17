@@ -35,10 +35,26 @@ pub const DRAWING_CANVAS_SIZE: usize = 128;
 use super::heuristic;
 
 #[derive(Clone, Copy)]
+pub struct DrawingParams {
+    pub stroke_reward: i64,
+    pub max_dist_base: u32,
+    pub max_dist_decay: f32,
+    pub max_dist_min: u32,
+}
+
+impl DrawingParams {
+    pub fn max_dist(&self, age: u32) -> u32 {
+        let decay_steps = (age / 30) as i32;
+        let raw = (self.max_dist_base as f32) * self.max_dist_decay.powi(decay_steps);
+        raw.round().max(self.max_dist_min as f32) as u32
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct DrawingPixel {
     pub(crate) src_x: u16,
     pub(crate) src_y: u16,
-    pub(crate) h: i64, // current heuristic value
+    pub(crate) h: i64, // base heuristic value (no stroke reward)
 }
 
 impl DrawingPixel {
@@ -78,8 +94,6 @@ impl DrawingPixel {
     }
 }
 
-pub(crate) const STROKE_REWARD: i64 = -10000000000;
-
 pub struct DrawingState {
     pixels: Vec<DrawingPixel>,
     rng: frand::Rand,
@@ -93,6 +107,7 @@ impl DrawingState {
         source: UnprocessedPreset,
         settings: GenerationSettings,
         colors: &[SeedColor],
+        _params: &DrawingParams,
     ) -> Result<Self, Box<dyn Error>> {
         let source_img = image::ImageBuffer::from_raw(
             source.width,
@@ -116,7 +131,7 @@ impl DrawingState {
                     weights[i],
                     colors,
                     settings.proximity_importance,
-                ) + STROKE_REWARD;
+                );
                 p.update_heuristic(h);
                 p
             })
@@ -137,19 +152,16 @@ impl DrawingState {
         pixel_data: &[PixelData],
         frame_count: u32,
         max_swaps: usize,
+        params: &DrawingParams,
     ) -> Option<Vec<usize>> {
         let mut swaps_made = 0;
-
-        fn max_dist(age: u32) -> u32 {
-            (((DRAWING_CANVAS_SIZE / 4) as f32) * (0.99f32).powi(age as i32 / 30)).round() as u32
-        }
 
         for _ in 0..max_swaps {
             let apos = self.rng.gen_range(0..self.pixels.len() as u64) as usize;
             let ax = apos as u16 % self.settings.sidelen as u16;
             let ay = apos as u16 / self.settings.sidelen as u16;
 
-            let max_dist_a = max_dist(frame_count.saturating_sub(pixel_data[apos].last_edited));
+            let max_dist_a = params.max_dist(frame_count.saturating_sub(pixel_data[apos].last_edited));
 
             let bx =
                 (ax as i16 + self.rng.gen_range(-(max_dist_a as i16)..(max_dist_a as i16 + 1)))
@@ -159,7 +171,7 @@ impl DrawingState {
                     .clamp(0, self.settings.sidelen as i16 - 1) as u16;
             let bpos = by as usize * self.settings.sidelen as usize + bx as usize;
 
-            let max_dist_b = max_dist(frame_count.saturating_sub(pixel_data[bpos].last_edited));
+            let max_dist_b = params.max_dist(frame_count.saturating_sub(pixel_data[bpos].last_edited));
             if (bx as i32 - ax as i32).abs() > max_dist_b as i32
                 || (by as i32 - ay as i32).abs() > max_dist_b as i32
             {
@@ -169,28 +181,37 @@ impl DrawingState {
             let t_a = self.target_pixels[apos];
             let t_b = self.target_pixels[bpos];
 
-            let a_on_b_h = self.pixels[apos].calc_drawing_heuristic(
+            let current_a = self.pixels[apos].h
+                + stroke_reward_with_params(apos, apos, pixel_data, &self.pixels, frame_count, params);
+            let current_b = self.pixels[bpos].h
+                + stroke_reward_with_params(bpos, bpos, pixel_data, &self.pixels, frame_count, params);
+
+            let a_on_b_base = self.pixels[apos].calc_drawing_heuristic(
                 (bx, by),
                 t_b,
                 self.weights[bpos],
                 colors,
                 self.settings.proximity_importance,
-            ) + stroke_reward(bpos, apos, pixel_data, &self.pixels, frame_count);
-
-            let b_on_a_h = self.pixels[bpos].calc_drawing_heuristic(
+            );
+            let b_on_a_base = self.pixels[bpos].calc_drawing_heuristic(
                 (ax, ay),
                 t_a,
                 self.weights[apos],
                 colors,
                 self.settings.proximity_importance,
-            ) + stroke_reward(apos, bpos, pixel_data, &self.pixels, frame_count);
+            );
+            let a_on_b_h = a_on_b_base
+                + stroke_reward_with_params(bpos, apos, pixel_data, &self.pixels, frame_count, params);
 
-            let improvement_a = self.pixels[apos].h - b_on_a_h;
-            let improvement_b = self.pixels[bpos].h - a_on_b_h;
+            let b_on_a_h = b_on_a_base
+                + stroke_reward_with_params(apos, bpos, pixel_data, &self.pixels, frame_count, params);
+
+            let improvement_a = current_a - b_on_a_h;
+            let improvement_b = current_b - a_on_b_h;
             if improvement_a + improvement_b > 0 {
                 self.pixels.swap(apos, bpos);
-                self.pixels[apos].update_heuristic(b_on_a_h);
-                self.pixels[bpos].update_heuristic(a_on_b_h);
+                self.pixels[apos].update_heuristic(b_on_a_base);
+                self.pixels[bpos].update_heuristic(a_on_b_base);
                 swaps_made += 1;
             }
         }
@@ -210,12 +231,13 @@ impl DrawingState {
     }
 }
 
-pub(crate) fn stroke_reward(
+pub(crate) fn stroke_reward_with_params(
     newpos: usize,
     oldpos: usize,
     pixel_data: &[PixelData],
     pixels: &[DrawingPixel],
     frame_count: u32,
+    params: &DrawingParams,
 ) -> i64 {
     let x = (newpos % DRAWING_CANVAS_SIZE) as u16;
     let y = (newpos / DRAWING_CANVAS_SIZE) as u16;
@@ -248,7 +270,7 @@ pub(crate) fn stroke_reward(
             .stroke_id
             == stroke_id
         {
-            return STROKE_REWARD;
+            return params.stroke_reward;
         }
     }
     0
@@ -265,6 +287,7 @@ pub fn drawing_process_genetic(
     frame_count: u32,
     my_id: u32,
     current_id: Arc<AtomicU32>,
+    params: DrawingParams,
 ) -> Result<(), Box<dyn Error>> {
     let source_img =
         image::ImageBuffer::from_raw(source.width, source.height, source.source_img.clone())
@@ -290,7 +313,7 @@ pub fn drawing_process_genetic(
                     &read_colors,
                     settings.proximity_importance,
                     // &read_pixel_data,
-                ) + STROKE_REWARD;
+                );
                 p.update_heuristic(h);
                 p
             })
@@ -298,10 +321,6 @@ pub fn drawing_process_genetic(
     };
 
     let mut rng = frand::Rand::with_seed(12345);
-    fn max_dist(age: u32) -> u32 {
-        (((DRAWING_CANVAS_SIZE / 4) as f32) * (0.99f32).powi(age as i32 / 30)).round() as u32
-    }
-
     let swaps_per_generation = SWAPS_PER_GENERATION_PER_PIXEL * pixels.len();
 
     loop {
@@ -321,7 +340,7 @@ pub fn drawing_process_genetic(
             let ay = apos as u16 / settings.sidelen as u16;
 
             //let stroke_id = pixel_data[apos].stroke_id as usize;
-            let max_dist_a = max_dist(frame_count.saturating_sub(pixel_data[apos].last_edited));
+            let max_dist_a = params.max_dist(frame_count.saturating_sub(pixel_data[apos].last_edited));
 
             let bx = (ax as i16 + rng.gen_range(-(max_dist_a as i16)..(max_dist_a as i16 + 1)))
                 .clamp(0, settings.sidelen as i16 - 1) as u16;
@@ -329,7 +348,7 @@ pub fn drawing_process_genetic(
                 .clamp(0, settings.sidelen as i16 - 1) as u16;
             let bpos = by as usize * settings.sidelen as usize + bx as usize;
 
-            let max_dist_b = max_dist(frame_count.saturating_sub(pixel_data[bpos].last_edited));
+            let max_dist_b = params.max_dist(frame_count.saturating_sub(pixel_data[bpos].last_edited));
             if (bx as i32 - ax as i32).abs() > max_dist_b as i32
                 || (by as i32 - ay as i32).abs() > max_dist_b as i32
             {
@@ -339,29 +358,38 @@ pub fn drawing_process_genetic(
             let t_a = target_pixels[apos];
             let t_b = target_pixels[bpos];
 
-            let a_on_b_h = pixels[apos].calc_drawing_heuristic(
+            let current_a = pixels[apos].h
+                + stroke_reward_with_params(apos, apos, &pixel_data, &pixels, frame_count, &params);
+            let current_b = pixels[bpos].h
+                + stroke_reward_with_params(bpos, bpos, &pixel_data, &pixels, frame_count, &params);
+
+            let a_on_b_base = pixels[apos].calc_drawing_heuristic(
                 (bx, by),
                 t_b,
                 weights[bpos],
                 &colors,
                 settings.proximity_importance,
-            ) + stroke_reward(bpos, apos, &pixel_data, &pixels, frame_count);
+            );
 
-            let b_on_a_h = pixels[bpos].calc_drawing_heuristic(
+            let b_on_a_base = pixels[bpos].calc_drawing_heuristic(
                 (ax, ay),
                 t_a,
                 weights[apos],
                 &colors,
                 settings.proximity_importance,
-            ) + stroke_reward(apos, bpos, &pixel_data, &pixels, frame_count);
+            );
+            let a_on_b_h = a_on_b_base
+                + stroke_reward_with_params(bpos, apos, &pixel_data, &pixels, frame_count, &params);
+            let b_on_a_h = b_on_a_base
+                + stroke_reward_with_params(apos, bpos, &pixel_data, &pixels, frame_count, &params);
 
-            let improvement_a = pixels[apos].h - b_on_a_h;
-            let improvement_b = pixels[bpos].h - a_on_b_h;
+            let improvement_a = current_a - b_on_a_h;
+            let improvement_b = current_b - a_on_b_h;
             if improvement_a + improvement_b > 0 {
                 // swap
                 pixels.swap(apos, bpos);
-                pixels[apos].update_heuristic(b_on_a_h);
-                pixels[bpos].update_heuristic(a_on_b_h);
+                pixels[apos].update_heuristic(b_on_a_base);
+                pixels[bpos].update_heuristic(a_on_b_base);
                 swaps_made += 1;
             }
         }

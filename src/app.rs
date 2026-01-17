@@ -61,6 +61,14 @@ const DEFAULT_RESOLUTION: u32 = 2048;
 const DEFAULT_RESOLUTION: u32 = 1024;
 
 const PRESET_VERSION: u32 = 2;
+const DRAW_IDLE_FRAMES: u32 = 30;
+const SETTLE_FRAMES: u32 = 240;
+const DRAW_STROKE_REWARD: i64 = -8_000_000_000;
+const SETTLE_STROKE_REWARD: i64 = -250_000_000;
+const DRAW_MAX_DIST_DECAY: f32 = 0.99;
+const SETTLE_MAX_DIST_DECAY: f32 = 0.995;
+const DRAW_MIN_DIST: u32 = 2;
+const SETTLE_MIN_DIST: u32 = 4;
 
 pub enum GuiMode {
     Transform,
@@ -154,6 +162,7 @@ pub struct AhmetKayaifyApp {
     preview_image: Option<image::ImageBuffer<image::Rgb<u8>, Vec<u8>>>,
     pending_preset_index: Option<usize>,
     stroke_count: u32,
+    last_stroke_frame: u32,
 
     frame_count: u32,
 
@@ -800,6 +809,7 @@ impl AhmetKayaifyApp {
             preview_image: None,
             pending_preset_index: None,
             stroke_count: 0,
+            last_stroke_frame: 0,
             gui: gui::GuiState::default(presets, random_preset, has_ahmet_kayaified_once),
             frame_count: 0,
             #[cfg(not(target_arch = "wasm32"))]
@@ -878,6 +888,40 @@ impl AhmetKayaifyApp {
             if preset.assignments.len() != expected {
                 preset.assignments = (0..expected).collect();
             }
+        }
+    }
+
+    fn drawing_settle_t(&self) -> f32 {
+        let idle = self.frame_count.saturating_sub(self.last_stroke_frame);
+        if idle <= DRAW_IDLE_FRAMES {
+            0.0
+        } else {
+            let idle = idle - DRAW_IDLE_FRAMES;
+            (idle as f32 / SETTLE_FRAMES as f32).min(1.0)
+        }
+    }
+
+    fn current_drawing_params(
+        &self,
+        t: f32,
+    ) -> calculate::drawing_process::DrawingParams {
+        let t = t.clamp(0.0, 1.0);
+        let lerp_f32 = |a: f32, b: f32| a + (b - a) * t;
+        let lerp_u32 = |a: u32, b: u32| ((a as f32) + (b as f32 - a as f32) * t).round() as u32;
+        let lerp_i64 = |a: i64, b: i64| {
+            let a = a as f64;
+            let b = b as f64;
+            (a + (b - a) * t as f64).round() as i64
+        };
+
+        let draw_base = (calculate::drawing_process::DRAWING_CANVAS_SIZE as u32) / 4;
+        let settle_base = (calculate::drawing_process::DRAWING_CANVAS_SIZE as u32) / 2;
+
+        calculate::drawing_process::DrawingParams {
+            stroke_reward: lerp_i64(DRAW_STROKE_REWARD, SETTLE_STROKE_REWARD),
+            max_dist_base: lerp_u32(draw_base, settle_base),
+            max_dist_decay: lerp_f32(DRAW_MAX_DIST_DECAY, SETTLE_MAX_DIST_DECAY),
+            max_dist_min: lerp_u32(DRAW_MIN_DIST, SETTLE_MIN_DIST),
         }
     }
 
@@ -1638,9 +1682,12 @@ impl AhmetKayaifyApp {
 
         let colors = self.colors.read().unwrap();
         let pixel_data = self.pixeldata.read().unwrap();
-        let max_swaps = (self.seed_count as usize)
-            .saturating_mul(4)
-            .clamp(10_000, 80_000);
+        let t = self.drawing_settle_t();
+        let params = self.current_drawing_params(t);
+        let swap_scale = 1.0 + t * 1.5;
+        let max_swaps = ((self.seed_count as f32) * 4.0 * swap_scale)
+            .round()
+            .clamp(10_000.0, 120_000.0) as usize;
         let mut latest = None;
 
         let time_budget_ms = 6.0;
@@ -1651,7 +1698,7 @@ impl AhmetKayaifyApp {
 
         loop {
             if let Some(assignments) =
-                state.step(&colors, &pixel_data, self.frame_count, max_swaps)
+                state.step(&colors, &pixel_data, self.frame_count, max_swaps, &params)
             {
                 latest = Some(assignments);
             }
@@ -1677,6 +1724,7 @@ impl AhmetKayaifyApp {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) {
+        self.last_stroke_frame = self.frame_count;
         let stroke_id = if last_mouse_pos.is_some() {
             self.stroke_count
         } else {
@@ -1825,6 +1873,7 @@ impl AhmetKayaifyApp {
         self.canvas_sim(device, queue, &source);
         self.gui.animate = true;
         self.stroke_count = 0;
+        self.last_stroke_frame = self.frame_count;
         self.gui.last_mouse_pos = None;
         *self.pixeldata.write().unwrap() =
             calculate::drawing_process::PixelData::init_canvas(self.frame_count);
@@ -1832,10 +1881,12 @@ impl AhmetKayaifyApp {
 
         #[cfg(target_arch = "wasm32")]
         {
+            let params = self.current_drawing_params(0.0);
             match calculate::drawing_process::DrawingState::new(
                 source.clone(),
                 settings,
                 &self.colors.read().unwrap(),
+                &params,
             ) {
                 Ok(state) => {
                     self.drawing_state = Some(state);
@@ -1848,6 +1899,7 @@ impl AhmetKayaifyApp {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
+            let params = self.current_drawing_params(0.0);
             self.current_drawing_id
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
@@ -1869,6 +1921,7 @@ impl AhmetKayaifyApp {
                         frame_count,
                         my_id,
                         current_id,
+                        params,
                     );
                     match result {
                         Ok(()) => {}
