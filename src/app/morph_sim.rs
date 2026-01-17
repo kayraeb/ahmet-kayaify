@@ -334,49 +334,6 @@ impl Sim {
         }
     }
 
-    pub fn apply_dst_force_floor(&mut self, min_force: f32) {
-        for cell in &mut self.cells {
-            if cell.dst_force < min_force {
-                cell.dst_force = min_force;
-            }
-        }
-    }
-
-    pub fn apply_assignments_range(
-        &mut self,
-        assignments: &[usize],
-        sidelen: u32,
-        start: usize,
-        count: usize,
-    ) -> usize {
-        if assignments.len() != self.cells.len() || start >= assignments.len() {
-            return 0;
-        }
-
-        let end = (start + count).min(assignments.len());
-        let width = (self.cells.len() as f32).sqrt();
-        let pixelsize = sidelen as f32 / width;
-
-        for target_idx in start..end {
-            let src_idx = assignments[target_idx];
-            let src_x = (src_idx % width as usize) as f32;
-            let src_y = (src_idx / width as usize) as f32;
-            let dst_x = (target_idx % width as usize) as f32;
-            let dst_y = (target_idx / width as usize) as f32;
-            let cell = &mut self.cells[src_idx];
-
-            cell.srcx = (src_x + 0.5) * pixelsize;
-            cell.srcy = (src_y + 0.5) * pixelsize;
-            cell.dstx = (dst_x + 0.5) * pixelsize;
-            cell.dsty = (dst_y + 0.5) * pixelsize;
-            cell.velx *= 0.5;
-            cell.vely *= 0.5;
-            cell.age = 0;
-        }
-
-        end - start
-    }
-
     pub fn set_assignments(&mut self, assignments: Vec<usize>, sidelen: u32) {
         let width = (self.cells.len() as f32).sqrt();
         let pixelsize = sidelen as f32 / width;

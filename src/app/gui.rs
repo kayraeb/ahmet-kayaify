@@ -245,15 +245,7 @@ impl App for AhmetKayaifyApp {
                         Ok(false) => { /* not ready yet */ }
                     }
                 } else {
-                    let sim_steps = if matches!(self.gui.mode, GuiMode::Draw) {
-                        let t = self.drawing_settle_t();
-                        if t > 0.4 { 2 } else { 1 }
-                    } else {
-                        1
-                    };
-                    for _ in 0..sim_steps {
-                        self.sim.update(&mut self.seeds, self.size.0);
-                    }
+                    self.sim.update(&mut self.seeds, self.size.0);
                 }
                 rs.queue
                     .write_buffer(&self.seed_buf, 0, bytemuck::cast_slice(&self.seeds));
@@ -1000,7 +992,6 @@ impl App for AhmetKayaifyApp {
         if matches!(self.gui.mode, GuiMode::Draw) {
             #[cfg(target_arch = "wasm32")]
             self.step_drawing_assignments();
-            self.apply_pending_assignments();
 
             let number_keys = [
                 egui::Key::Num1,

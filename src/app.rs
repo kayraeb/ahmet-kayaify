@@ -60,20 +60,15 @@ const DEFAULT_RESOLUTION: u32 = 2048;
 #[cfg(target_arch = "wasm32")]
 const DEFAULT_RESOLUTION: u32 = 1024;
 
-const PRESET_VERSION: u32 = 3;
+const PRESET_VERSION: u32 = 2;
 const DRAW_IDLE_FRAMES: u32 = 30;
 const SETTLE_FRAMES: u32 = 240;
 const DRAW_STROKE_REWARD: i64 = -8_000_000_000;
-const SETTLE_STROKE_REWARD: i64 = -200_000_000;
-const DRAW_STROKE_DECAY_FRAMES: u32 = 120;
-const SETTLE_STROKE_DECAY_FRAMES: u32 = 360;
-const DRAW_MAX_DIST_DECAY: f32 = 0.995;
-const SETTLE_MAX_DIST_DECAY: f32 = 0.985;
-const DRAW_MIN_DIST: u32 = 4;
-const SETTLE_MIN_DIST: u32 = 3;
-const DRAW_GLOBAL_SWAP_PROB: f32 = 0.006;
-const SETTLE_GLOBAL_SWAP_PROB: f32 = 0.03;
-const DRAW_FORCE_FLOOR: f32 = 0.12;
+const SETTLE_STROKE_REWARD: i64 = -250_000_000;
+const DRAW_MAX_DIST_DECAY: f32 = 0.99;
+const SETTLE_MAX_DIST_DECAY: f32 = 0.995;
+const DRAW_MIN_DIST: u32 = 2;
+const SETTLE_MIN_DIST: u32 = 4;
 
 pub enum GuiMode {
     Transform,
@@ -168,9 +163,6 @@ pub struct AhmetKayaifyApp {
     pending_preset_index: Option<usize>,
     stroke_count: u32,
     last_stroke_frame: u32,
-    last_assignment_frame: u32,
-    pending_assignments: Option<Vec<usize>>,
-    pending_assignment_cursor: usize,
 
     frame_count: u32,
 
@@ -818,9 +810,6 @@ impl AhmetKayaifyApp {
             pending_preset_index: None,
             stroke_count: 0,
             last_stroke_frame: 0,
-            last_assignment_frame: 0,
-            pending_assignments: None,
-            pending_assignment_cursor: 0,
             gui: gui::GuiState::default(presets, random_preset, has_ahmet_kayaified_once),
             frame_count: 0,
             #[cfg(not(target_arch = "wasm32"))]
@@ -925,19 +914,14 @@ impl AhmetKayaifyApp {
             (a + (b - a) * t as f64).round() as i64
         };
 
-        let draw_base = (calculate::drawing_process::DRAWING_CANVAS_SIZE as u32 * 3) / 4;
+        let draw_base = (calculate::drawing_process::DRAWING_CANVAS_SIZE as u32) / 4;
         let settle_base = (calculate::drawing_process::DRAWING_CANVAS_SIZE as u32) / 2;
 
         calculate::drawing_process::DrawingParams {
             stroke_reward: lerp_i64(DRAW_STROKE_REWARD, SETTLE_STROKE_REWARD),
-            stroke_decay_frames: lerp_u32(
-                DRAW_STROKE_DECAY_FRAMES,
-                SETTLE_STROKE_DECAY_FRAMES,
-            ),
             max_dist_base: lerp_u32(draw_base, settle_base),
             max_dist_decay: lerp_f32(DRAW_MAX_DIST_DECAY, SETTLE_MAX_DIST_DECAY),
             max_dist_min: lerp_u32(DRAW_MIN_DIST, SETTLE_MIN_DIST),
-            global_swap_prob: lerp_f32(DRAW_GLOBAL_SWAP_PROB, SETTLE_GLOBAL_SWAP_PROB),
         }
     }
 
@@ -1694,86 +1678,36 @@ impl AhmetKayaifyApp {
     fn step_drawing_assignments(&mut self) {
         let t = self.drawing_settle_t();
         let params = self.current_drawing_params(t);
-        let swap_scale = 1.0 + (1.0 - t) * 1.2;
-        let max_swaps = ((self.seed_count as f32) * 1.5 * swap_scale)
+        let swap_scale = 1.0 + t * 1.5;
+        let max_swaps = ((self.seed_count as f32) * 4.0 * swap_scale)
             .round()
-            .clamp(5_000.0, 60_000.0) as usize;
-        let min_swaps = ((self.seed_count as f32) * (0.004 + t * 0.004))
-            .round()
-            .max(64.0) as usize;
-        let min_gap: u32 = if t < 0.3 { 4 } else { 6 };
-        let max_gap: u32 = 20;
-        let mut best: Option<calculate::drawing_process::DrawingStep> = None;
+            .clamp(10_000.0, 120_000.0) as usize;
+        let mut latest = None;
         let Some(state) = self.drawing_state.as_mut() else {
             return;
         };
 
-        let mut best: Option<calculate::drawing_process::DrawingStep> = None;
-        {
-            let colors = self.colors.read().unwrap();
-            let pixel_data = self.pixeldata.read().unwrap();
+        let colors = self.colors.read().unwrap();
+        let pixel_data = self.pixeldata.read().unwrap();
 
-            let time_budget_ms = 6.0_f64 + (t as f64) * 2.0;
-            let start = js_sys::Date::now();
+        let time_budget_ms = 6.0;
+        let start = js_sys::Date::now();
 
-            loop {
-                if let Some(step) =
-                    state.step(&colors, &pixel_data, self.frame_count, max_swaps, &params)
-                {
-                    let replace = best
-                        .as_ref()
-                        .map_or(true, |current| step.swaps_made > current.swaps_made);
-                    if replace {
-                        best = Some(step);
-                    }
-                }
+        loop {
+            if let Some(assignments) =
+                state.step(&colors, &pixel_data, self.frame_count, max_swaps, &params)
+            {
+                latest = Some(assignments);
+            }
 
-                let now = js_sys::Date::now();
-                if now - start >= time_budget_ms {
-                    break;
-                }
+            let now = js_sys::Date::now();
+            if now - start >= time_budget_ms {
+                break;
             }
         }
 
-        if let Some(step) = best {
-            let since_last = self.frame_count.saturating_sub(self.last_assignment_frame);
-            if (step.swaps_made >= min_swaps && since_last >= min_gap) || since_last >= max_gap {
-                self.queue_assignments(step.assignments);
-                self.sim.apply_dst_force_floor(DRAW_FORCE_FLOOR);
-                self.last_assignment_frame = self.frame_count;
-            }
-        }
-    }
-
-    fn queue_assignments(&mut self, assignments: Vec<usize>) {
-        if self.pending_assignments.is_some() {
-            return;
-        }
-        self.pending_assignment_cursor = 0;
-        self.pending_assignments = Some(assignments);
-    }
-
-    fn apply_pending_assignments(&mut self) {
-        let Some(assignments) = self.pending_assignments.as_ref() else {
-            return;
-        };
-        let t = self.drawing_settle_t();
-        let chunk = if t < 0.3 { 256 } else { 512 };
-        let processed = self.sim.apply_assignments_range(
-            assignments,
-            self.size.0,
-            self.pending_assignment_cursor,
-            chunk,
-        );
-        if processed == 0 {
-            self.pending_assignments = None;
-            self.pending_assignment_cursor = 0;
-            return;
-        }
-        self.pending_assignment_cursor += processed;
-        if self.pending_assignment_cursor >= assignments.len() {
-            self.pending_assignments = None;
-            self.pending_assignment_cursor = 0;
+        if let Some(assignments) = latest {
+            self.sim.set_assignments(assignments, self.size.0);
         }
     }
 
@@ -1826,9 +1760,7 @@ impl AhmetKayaifyApp {
                 (*colors)[i].rgba[2] = blend((*colors)[i].rgba[2], color[2], alpha);
 
                 self.sim.cells[i].set_age(0);
-                let force =
-                    (DRAW_FORCE_FLOOR + (stroke_id as f32 * 0.002).sqrt()).min(0.85);
-                self.sim.cells[i].set_dst_force(force);
+                self.sim.cells[i].set_dst_force(0.05 + (stroke_id as f32 * 0.004).sqrt());
                 self.sim.cells[i].set_stroke_id(stroke_id);
                 self.pixeldata.write().unwrap()[i] = calculate::drawing_process::PixelData {
                     stroke_id,
@@ -1933,11 +1865,9 @@ impl AhmetKayaifyApp {
             source_img: blank.into_raw(),
         };
         self.canvas_sim(device, queue, &source);
-        self.sim.apply_dst_force_floor(DRAW_FORCE_FLOOR);
         self.gui.animate = true;
         self.stroke_count = 0;
         self.last_stroke_frame = self.frame_count;
-        self.last_assignment_frame = self.frame_count;
         self.gui.last_mouse_pos = None;
         *self.pixeldata.write().unwrap() =
             calculate::drawing_process::PixelData::init_canvas(self.frame_count);

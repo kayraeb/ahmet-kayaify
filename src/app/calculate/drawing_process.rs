@@ -12,27 +12,6 @@ use super::ProgressMsg;
 
 use super::GenerationSettings;
 
-#[cfg(not(target_arch = "wasm32"))]
-use crate::app::calculate::SWAPS_PER_GENERATION_PER_PIXEL;
-
-fn luma_u8(r: u8, g: u8, b: u8) -> u8 {
-    let r = r as u32;
-    let g = g as u32;
-    let b = b as u32;
-    ((r * 54 + g * 183 + b * 19) >> 8) as u8
-}
-
-fn stroke_bias_from_target(target_pixels: &[(u8, u8, u8)]) -> Vec<u8> {
-    target_pixels
-        .iter()
-        .map(|(r, g, b)| {
-            let luma = luma_u8(*r, *g, *b) as u16;
-            let darkness = 255u16.saturating_sub(luma);
-            ((darkness * darkness) / 255) as u8
-        })
-        .collect()
-}
-
 #[derive(Clone, Copy)]
 pub struct PixelData {
     pub stroke_id: u32,
@@ -57,11 +36,9 @@ use super::heuristic;
 #[derive(Clone, Copy)]
 pub struct DrawingParams {
     pub stroke_reward: i64,
-    pub stroke_decay_frames: u32,
     pub max_dist_base: u32,
     pub max_dist_decay: f32,
     pub max_dist_min: u32,
-    pub global_swap_prob: f32,
 }
 
 impl DrawingParams {
@@ -116,18 +93,12 @@ impl DrawingPixel {
     }
 }
 
-pub struct DrawingStep {
-    pub assignments: Vec<usize>,
-    pub swaps_made: usize,
-}
-
 pub struct DrawingState {
     pixels: Vec<DrawingPixel>,
     rng: frand::Rand,
     settings: GenerationSettings,
     target_pixels: Vec<(u8, u8, u8)>,
     weights: Vec<i64>,
-    stroke_bias: Vec<u8>,
 }
 
 impl DrawingState {
@@ -145,7 +116,6 @@ impl DrawingState {
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid source image"))?;
         let (source_pixels, target_pixels, weights) =
             calculate::util::get_images(source_img, &settings)?;
-        let stroke_bias = stroke_bias_from_target(&target_pixels);
 
         let pixels = source_pixels
             .iter()
@@ -172,7 +142,6 @@ impl DrawingState {
             settings,
             target_pixels,
             weights,
-            stroke_bias,
         })
     }
 
@@ -183,7 +152,7 @@ impl DrawingState {
         frame_count: u32,
         max_swaps: usize,
         params: &DrawingParams,
-    ) -> Option<DrawingStep> {
+    ) -> Option<Vec<usize>> {
         let mut swaps_made = 0;
 
         for _ in 0..max_swaps {
@@ -191,62 +160,30 @@ impl DrawingState {
             let ax = apos as u16 % self.settings.sidelen as u16;
             let ay = apos as u16 / self.settings.sidelen as u16;
 
-            let roll = self.rng.gen_range(0..1_000_000) as f32 / 1_000_000.0;
-            let use_global = roll < params.global_swap_prob;
+            let max_dist_a = params.max_dist(frame_count.saturating_sub(pixel_data[apos].last_edited));
 
-            let (bx, by, bpos) = if use_global {
-                let bpos = self.rng.gen_range(0..self.pixels.len() as u64) as usize;
-                let bx = bpos as u16 % self.settings.sidelen as u16;
-                let by = bpos as u16 / self.settings.sidelen as u16;
-                (bx, by, bpos)
-            } else {
-                let a_src_index = self.pixels[apos].src_y as usize * DRAWING_CANVAS_SIZE
-                    + self.pixels[apos].src_x as usize;
-                let max_dist_a =
-                    params.max_dist(frame_count.saturating_sub(pixel_data[a_src_index].last_edited));
-                let bx = (ax as i16
-                    + self.rng.gen_range(-(max_dist_a as i16)..(max_dist_a as i16 + 1)))
+            let bx =
+                (ax as i16 + self.rng.gen_range(-(max_dist_a as i16)..(max_dist_a as i16 + 1)))
                     .clamp(0, self.settings.sidelen as i16 - 1) as u16;
-                let by = (ay as i16
-                    + self.rng.gen_range(-(max_dist_a as i16)..(max_dist_a as i16 + 1)))
+            let by =
+                (ay as i16 + self.rng.gen_range(-(max_dist_a as i16)..(max_dist_a as i16 + 1)))
                     .clamp(0, self.settings.sidelen as i16 - 1) as u16;
-                let bpos = by as usize * self.settings.sidelen as usize + bx as usize;
+            let bpos = by as usize * self.settings.sidelen as usize + bx as usize;
 
-                let b_src_index = self.pixels[bpos].src_y as usize * DRAWING_CANVAS_SIZE
-                    + self.pixels[bpos].src_x as usize;
-                let max_dist_b =
-                    params.max_dist(frame_count.saturating_sub(pixel_data[b_src_index].last_edited));
-                if (bx as i32 - ax as i32).abs() > max_dist_b as i32
-                    || (by as i32 - ay as i32).abs() > max_dist_b as i32
-                {
-                    continue;
-                }
-                (bx, by, bpos)
-            };
+            let max_dist_b = params.max_dist(frame_count.saturating_sub(pixel_data[bpos].last_edited));
+            if (bx as i32 - ax as i32).abs() > max_dist_b as i32
+                || (by as i32 - ay as i32).abs() > max_dist_b as i32
+            {
+                continue;
+            }
 
             let t_a = self.target_pixels[apos];
             let t_b = self.target_pixels[bpos];
 
             let current_a = self.pixels[apos].h
-                + stroke_reward_with_params(
-                    apos,
-                    apos,
-                    pixel_data,
-                    &self.pixels,
-                    &self.stroke_bias,
-                    frame_count,
-                    params,
-                );
+                + stroke_reward_with_params(apos, apos, pixel_data, &self.pixels, frame_count, params);
             let current_b = self.pixels[bpos].h
-                + stroke_reward_with_params(
-                    bpos,
-                    bpos,
-                    pixel_data,
-                    &self.pixels,
-                    &self.stroke_bias,
-                    frame_count,
-                    params,
-                );
+                + stroke_reward_with_params(bpos, bpos, pixel_data, &self.pixels, frame_count, params);
 
             let a_on_b_base = self.pixels[apos].calc_drawing_heuristic(
                 (bx, by),
@@ -263,26 +200,10 @@ impl DrawingState {
                 self.settings.proximity_importance,
             );
             let a_on_b_h = a_on_b_base
-                + stroke_reward_with_params(
-                    bpos,
-                    apos,
-                    pixel_data,
-                    &self.pixels,
-                    &self.stroke_bias,
-                    frame_count,
-                    params,
-                );
+                + stroke_reward_with_params(bpos, apos, pixel_data, &self.pixels, frame_count, params);
 
             let b_on_a_h = b_on_a_base
-                + stroke_reward_with_params(
-                    apos,
-                    bpos,
-                    pixel_data,
-                    &self.pixels,
-                    &self.stroke_bias,
-                    frame_count,
-                    params,
-                );
+                + stroke_reward_with_params(apos, bpos, pixel_data, &self.pixels, frame_count, params);
 
             let improvement_a = current_a - b_on_a_h;
             let improvement_b = current_b - a_on_b_h;
@@ -295,16 +216,14 @@ impl DrawingState {
         }
 
         if swaps_made > 0 {
-            Some(DrawingStep {
-                assignments: self
-                    .pixels
+            Some(
+                self.pixels
                     .iter()
                     .map(|p| {
                         p.src_y as usize * self.settings.sidelen as usize + p.src_x as usize
                     })
                     .collect(),
-                swaps_made,
-            })
+            )
         } else {
             None
         }
@@ -316,7 +235,6 @@ pub(crate) fn stroke_reward_with_params(
     oldpos: usize,
     pixel_data: &[PixelData],
     pixels: &[DrawingPixel],
-    stroke_bias: &[u8],
     frame_count: u32,
     params: &DrawingParams,
 ) -> i64 {
@@ -327,29 +245,7 @@ pub(crate) fn stroke_reward_with_params(
     let data = pixel_data
         [pixels[oldpos].src_x as usize + pixels[oldpos].src_y as usize * DRAWING_CANVAS_SIZE];
     let stroke_id = data.stroke_id;
-    if stroke_id == 0 {
-        return 0;
-    }
-
-    let age = frame_count.saturating_sub(data.last_edited);
-    let decay_frames = params.stroke_decay_frames.max(1) as f32;
-    let age_scale = 1.0 - (age as f32 / decay_frames).clamp(0.0, 1.0);
-    if age_scale <= 0.0 {
-        return 0;
-    }
-
-    let bias = stroke_bias
-        .get(newpos)
-        .copied()
-        .unwrap_or(0) as f32
-        / 255.0;
-    if bias <= 0.0 {
-        return 0;
-    }
-    let reward = (params.stroke_reward as f32 * bias * age_scale).round() as i64;
-    if reward == 0 {
-        return 0;
-    }
+    let _age = frame_count - data.last_edited;
 
     for (dx, dy) in [
         //(-1, -1),
@@ -373,7 +269,7 @@ pub(crate) fn stroke_reward_with_params(
             .stroke_id
             == stroke_id
         {
-            return reward;
+            return params.stroke_reward;
         }
     }
     0
@@ -397,7 +293,6 @@ pub fn drawing_process_genetic(
             .unwrap();
     let (source_pixels, target_pixels, weights) =
         calculate::util::get_images(source_img, &settings)?;
-    let stroke_bias = stroke_bias_from_target(&target_pixels);
 
     let mut pixels = {
         let read_colors: Vec<SeedColor> = colors.read().unwrap().clone();
@@ -426,10 +321,6 @@ pub fn drawing_process_genetic(
 
     let mut rng = frand::Rand::with_seed(12345);
     let swaps_per_generation = SWAPS_PER_GENERATION_PER_PIXEL * pixels.len();
-    let min_swaps_for_update = (pixels.len() / 256).max(32);
-    let mut iteration = 0usize;
-    let mut last_sent = 0usize;
-    let mut local_frame = frame_count;
 
     loop {
         let colors: Vec<SeedColor> = {
@@ -447,60 +338,29 @@ pub fn drawing_process_genetic(
             let ax = apos as u16 % settings.sidelen as u16;
             let ay = apos as u16 / settings.sidelen as u16;
 
-            let roll = rng.gen_range(0..1_000_000) as f32 / 1_000_000.0;
-            let use_global = roll < params.global_swap_prob;
+            //let stroke_id = pixel_data[apos].stroke_id as usize;
+            let max_dist_a = params.max_dist(frame_count.saturating_sub(pixel_data[apos].last_edited));
 
-            let (bx, by, bpos) = if use_global {
-                let bpos = rng.gen_range(0..pixels.len() as u64) as usize;
-                let bx = bpos as u16 % settings.sidelen as u16;
-                let by = bpos as u16 / settings.sidelen as u16;
-                (bx, by, bpos)
-            } else {
-                let a_src_index =
-                    pixels[apos].src_y as usize * DRAWING_CANVAS_SIZE + pixels[apos].src_x as usize;
-                let max_dist_a = params
-                    .max_dist(local_frame.saturating_sub(pixel_data[a_src_index].last_edited));
-                let bx = (ax as i16 + rng.gen_range(-(max_dist_a as i16)..(max_dist_a as i16 + 1)))
-                    .clamp(0, settings.sidelen as i16 - 1) as u16;
-                let by = (ay as i16 + rng.gen_range(-(max_dist_a as i16)..(max_dist_a as i16 + 1)))
-                    .clamp(0, settings.sidelen as i16 - 1) as u16;
-                let bpos = by as usize * settings.sidelen as usize + bx as usize;
+            let bx = (ax as i16 + rng.gen_range(-(max_dist_a as i16)..(max_dist_a as i16 + 1)))
+                .clamp(0, settings.sidelen as i16 - 1) as u16;
+            let by = (ay as i16 + rng.gen_range(-(max_dist_a as i16)..(max_dist_a as i16 + 1)))
+                .clamp(0, settings.sidelen as i16 - 1) as u16;
+            let bpos = by as usize * settings.sidelen as usize + bx as usize;
 
-                let b_src_index =
-                    pixels[bpos].src_y as usize * DRAWING_CANVAS_SIZE + pixels[bpos].src_x as usize;
-                let max_dist_b = params
-                    .max_dist(local_frame.saturating_sub(pixel_data[b_src_index].last_edited));
-                if (bx as i32 - ax as i32).abs() > max_dist_b as i32
-                    || (by as i32 - ay as i32).abs() > max_dist_b as i32
-                {
-                    continue;
-                }
-                (bx, by, bpos)
-            };
+            let max_dist_b = params.max_dist(frame_count.saturating_sub(pixel_data[bpos].last_edited));
+            if (bx as i32 - ax as i32).abs() > max_dist_b as i32
+                || (by as i32 - ay as i32).abs() > max_dist_b as i32
+            {
+                continue;
+            }
 
             let t_a = target_pixels[apos];
             let t_b = target_pixels[bpos];
 
             let current_a = pixels[apos].h
-                + stroke_reward_with_params(
-                    apos,
-                    apos,
-                    &pixel_data,
-                    &pixels,
-                    &stroke_bias,
-                    local_frame,
-                    &params,
-                );
+                + stroke_reward_with_params(apos, apos, &pixel_data, &pixels, frame_count, &params);
             let current_b = pixels[bpos].h
-                + stroke_reward_with_params(
-                    bpos,
-                    bpos,
-                    &pixel_data,
-                    &pixels,
-                    &stroke_bias,
-                    local_frame,
-                    &params,
-                );
+                + stroke_reward_with_params(bpos, bpos, &pixel_data, &pixels, frame_count, &params);
 
             let a_on_b_base = pixels[apos].calc_drawing_heuristic(
                 (bx, by),
@@ -518,25 +378,9 @@ pub fn drawing_process_genetic(
                 settings.proximity_importance,
             );
             let a_on_b_h = a_on_b_base
-                + stroke_reward_with_params(
-                    bpos,
-                    apos,
-                    &pixel_data,
-                    &pixels,
-                    &stroke_bias,
-                    local_frame,
-                    &params,
-                );
+                + stroke_reward_with_params(bpos, apos, &pixel_data, &pixels, frame_count, &params);
             let b_on_a_h = b_on_a_base
-                + stroke_reward_with_params(
-                    apos,
-                    bpos,
-                    &pixel_data,
-                    &pixels,
-                    &stroke_bias,
-                    local_frame,
-                    &params,
-                );
+                + stroke_reward_with_params(apos, bpos, &pixel_data, &pixels, frame_count, &params);
 
             let improvement_a = current_a - b_on_a_h;
             let improvement_b = current_b - a_on_b_h;
@@ -561,15 +405,12 @@ pub fn drawing_process_genetic(
         //     return Ok(());
         // }
         // tx.send(ProgressMsg::UpdatePreview(img))?;
-        if swaps_made > 0
-            && (swaps_made >= min_swaps_for_update || iteration.saturating_sub(last_sent) >= 6)
-        {
+        if swaps_made > 0 {
             let assignments = pixels
                 .iter()
                 .map(|p| p.src_y as usize * settings.sidelen as usize + p.src_x as usize)
                 .collect::<Vec<_>>();
             tx.send(ProgressMsg::UpdateAssignments(assignments))?;
-            last_sent = iteration;
         }
         if my_id != current_id.load(std::sync::atomic::Ordering::Relaxed) {
             tx.send(ProgressMsg::Cancelled).unwrap();
@@ -577,7 +418,5 @@ pub fn drawing_process_genetic(
         }
 
         //max_dist = (max_dist as f32 * 0.99).max(4.0) as u32;
-        iteration = iteration.wrapping_add(1);
-        local_frame = local_frame.wrapping_add(1);
     }
 }
