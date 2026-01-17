@@ -1708,27 +1708,30 @@ impl AhmetKayaifyApp {
             return;
         };
 
-        let colors = self.colors.read().unwrap();
-        let pixel_data = self.pixeldata.read().unwrap();
+        let mut best: Option<calculate::drawing_process::DrawingStep> = None;
+        {
+            let colors = self.colors.read().unwrap();
+            let pixel_data = self.pixeldata.read().unwrap();
 
-        let time_budget_ms = 6.0_f64 + (t as f64) * 2.0;
-        let start = js_sys::Date::now();
+            let time_budget_ms = 6.0_f64 + (t as f64) * 2.0;
+            let start = js_sys::Date::now();
 
-        loop {
-            if let Some(step) =
-                state.step(&colors, &pixel_data, self.frame_count, max_swaps, &params)
-            {
-                let replace = best
-                    .as_ref()
-                    .map_or(true, |current| step.swaps_made > current.swaps_made);
-                if replace {
-                    best = Some(step);
+            loop {
+                if let Some(step) =
+                    state.step(&colors, &pixel_data, self.frame_count, max_swaps, &params)
+                {
+                    let replace = best
+                        .as_ref()
+                        .map_or(true, |current| step.swaps_made > current.swaps_made);
+                    if replace {
+                        best = Some(step);
+                    }
                 }
-            }
 
-            let now = js_sys::Date::now();
-            if now - start >= time_budget_ms {
-                break;
+                let now = js_sys::Date::now();
+                if now - start >= time_budget_ms {
+                    break;
+                }
             }
         }
 
