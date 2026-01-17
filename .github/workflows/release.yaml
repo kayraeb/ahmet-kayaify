@@ -1,0 +1,242 @@
+name: Build & Package (Windows, macOS, Linux)
+
+on:
+    workflow_dispatch: # manual run from Actions tab
+
+env:
+    BIN_NAME: obamify
+    # Human-facing display name for the app
+    APP_DISPLAY_NAME: obamify
+    # Reverse-DNS bundle identifier
+    APP_BUNDLE_ID: com.obamify
+
+jobs:
+    build:
+        name: Build ${{ matrix.os_tag }}
+        runs-on: ${{ matrix.runner }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - runner: ubuntu-latest
+                      os_tag: linux
+                      target: x86_64-unknown-linux-gnu
+                      ext: ""
+                    - runner: macos-14
+                      os_tag: macos
+                      target: aarch64-apple-darwin
+                      ext: ""
+                    - runner: windows-latest
+                      os_tag: windows
+                      target: x86_64-pc-windows-msvc
+                      ext: ".exe"
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: ${{ matrix.target }}
+
+            - name: Cargo build (release)
+              run: cargo build --release --target ${{ matrix.target }}
+
+            - name: Package (.app bundle)
+              if: ${{ startsWith(matrix.runner, 'macos') }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  APP="${{ env.BIN_NAME }}"
+                  DISP="${{ env.APP_DISPLAY_NAME }}"
+                  BUNDLE_ID="${{ env.APP_BUNDLE_ID }}"
+                  BIN="target/${{ matrix.target }}/release/${APP}${{ matrix.ext }}"
+                  test -f "$BIN" || (echo "Missing $BIN" && exit 1)
+
+                  # Derive version from Cargo metadata (fallback to 0.0.0)
+                  VERSION="$(cargo metadata --format-version 1 --no-deps | python3 -c "import sys, json; m=json.load(sys.stdin); p=[x for x in m['packages'] if x['name']=='${APP}']; print(p[0]['version'] if p else '0.0.0')")"
+
+                  APPDIR="dist/${DISP}.app"
+                  mkdir -p "${APPDIR}/Contents/MacOS" "${APPDIR}/Contents/Resources"
+
+                  # Binary
+                  cp "$BIN" "${APPDIR}/Contents/MacOS/${APP}"
+                  chmod +x "${APPDIR}/Contents/MacOS/${APP}"
+
+                  # Icon (optional) - put your .icns at assets/macos/icon.icns
+                  if [ -f assets/macos/icon.icns ]; then
+                    cp assets/macos/icon.icns "${APPDIR}/Contents/Resources/AppIcon.icns"
+                    ICON_LINE="<key>CFBundleIconFile</key><string>AppIcon</string>"
+                  else
+                    ICON_LINE=""
+                  fi
+
+                  # Generate Info.plist
+                  cat > "${APPDIR}/Contents/Info.plist" <<PLIST
+                  <?xml version="1.0" encoding="UTF-8"?>
+                  <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+                  <plist version="1.0">
+                  <dict>
+                    <key>CFBundleName</key><string>${DISP}</string>
+                    <key>CFBundleDisplayName</key><string>${DISP}</string>
+                    <key>CFBundleExecutable</key><string>${APP}</string>
+                    <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
+                    <key>CFBundleVersion</key><string>${VERSION}</string>
+                    <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+                    <key>LSMinimumSystemVersion</key><string>11.0</string>
+                    <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
+                    <key>NSHighResolutionCapable</key><true/>
+                    ${ICON_LINE}
+                  </dict>
+                  </plist>
+                  PLIST
+
+                  # Zip for distribution (zip keeps resource forks properly with ditto flags)
+                  mkdir -p dist
+                  ditto -c -k --sequesterRsrc --keepParent "${APPDIR}" "dist/${APP}-${{ matrix.os_tag }}.zip"
+
+            - name: Package (Linux AppImage)
+              if: ${{ startsWith(matrix.runner, 'ubuntu') }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  APP="${{ env.BIN_NAME }}"
+                  DISP="${{ env.APP_DISPLAY_NAME }}"
+                  BIN="target/${{ matrix.target }}/release/${APP}"
+
+                  echo "Checking for binary at: $BIN"
+                  test -f "$BIN" || (echo "Missing $BIN" && exit 1)
+
+                  echo "Creating AppDir structure..."
+                  mkdir -p dist/AppDir/usr/bin dist/AppDir/usr/share/applications dist/AppDir/usr/share/icons/hicolor/256x256/apps
+
+                  # Put binary in AppDir
+                  echo "Copying binary..."
+                  cp "$BIN" dist/AppDir/usr/bin/${APP}
+                  chmod +x dist/AppDir/usr/bin/${APP}
+
+                  # Icon (optional) - place a 256x256 PNG at assets/linux/icon.png
+                  if [ -f assets/linux/icon.png ]; then
+                    echo "Copying icon..."
+                    cp assets/linux/icon.png dist/AppDir/usr/share/icons/hicolor/256x256/apps/${APP}.png
+                    ICON_PATH=dist/AppDir/usr/share/icons/hicolor/256x256/apps/${APP}.png
+                  else
+                    echo "No icon found, proceeding without..."
+                    ICON_PATH=
+                  fi
+
+                  # Desktop file
+                  echo "Creating desktop file..."
+                  if [ -n "$ICON_PATH" ]; then
+                    ICON_LINE="Icon=${APP}"
+                  else
+                    ICON_LINE=""
+                  fi
+
+                  cat > dist/AppDir/usr/share/applications/${APP}.desktop <<DESKTOP
+                  [Desktop Entry]
+                  Type=Application
+                  Name=${DISP}
+                  Exec=${APP}
+                  ${ICON_LINE}
+                  Categories=Utility;
+                  Terminal=false
+                  DESKTOP
+
+                  # AppRun launcher
+                  echo "Creating AppRun launcher..."
+                  cat > dist/AppDir/AppRun <<'APPRUN'
+                  #!/bin/sh
+                  HERE="$(dirname "$(readlink -f "$0")")"
+                  export PATH="$HERE/usr/bin:$PATH"
+                  exec "${HERE}/usr/bin/obamify" "$@"
+                  APPRUN
+                  chmod +x dist/AppDir/AppRun
+
+                  # Create tarball first (guaranteed to work)
+                  echo "Creating tarball..."
+                  mkdir -p dist
+                  tar -C "target/${{ matrix.target }}/release" -czf "dist/${APP}-${{ matrix.os_tag }}.tar.gz" "${APP}"
+
+                  # Try to create AppImage (may fail on some systems)
+                  echo "Attempting to create AppImage..."
+                  if command -v wget >/dev/null 2>&1; then
+                    echo "Downloading AppImage tools..."
+                    LINUXDEPLOY_SUCCESS=false
+                    APPIMAGETOOL_SUCCESS=false
+                    
+                    if wget -q "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage" -O linuxdeploy; then
+                      LINUXDEPLOY_SUCCESS=true
+                      echo "linuxdeploy downloaded successfully"
+                    else
+                      echo "Failed to download linuxdeploy"
+                    fi
+                    
+                    if wget -q "https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage" -O appimagetool; then
+                      APPIMAGETOOL_SUCCESS=true
+                      echo "appimagetool downloaded successfully"
+                    else
+                      echo "Failed to download appimagetool"
+                    fi
+                    
+                    if [ "$LINUXDEPLOY_SUCCESS" = true ] && [ "$APPIMAGETOOL_SUCCESS" = true ]; then
+                      chmod +x linuxdeploy appimagetool
+                      
+                      # Build AppImage
+                      echo "Building AppImage with both tools available..."
+                      if [ -n "$ICON_PATH" ]; then
+                        ./linuxdeploy --appdir dist/AppDir -d dist/AppDir/usr/share/applications/${APP}.desktop -i "$ICON_PATH" --output appimage || echo "AppImage creation failed"
+                      else
+                        ./linuxdeploy --appdir dist/AppDir -d dist/AppDir/usr/share/applications/${APP}.desktop --output appimage || echo "AppImage creation failed"
+                      fi
+                      
+                      # Move result if it exists
+                      if ls *.AppImage 1> /dev/null 2>&1; then
+                        mv *.AppImage "dist/${APP}-${{ matrix.os_tag }}.AppImage"
+                        echo "AppImage created successfully"
+                      else
+                        echo "AppImage creation failed, but tarball is available"
+                      fi
+                    else
+                      echo "Could not download both AppImage tools, skipping AppImage creation"
+                      echo "linuxdeploy: $LINUXDEPLOY_SUCCESS, appimagetool: $APPIMAGETOOL_SUCCESS"
+                    fi
+                  else
+                    echo "wget not available, skipping AppImage creation"
+                  fi
+
+            - name: Package (Windows)
+              if: startsWith(matrix.runner, 'windows')
+              shell: pwsh
+              run: |
+                  $ErrorActionPreference = "Stop"
+                  $App = "${{ env.BIN_NAME }}"
+                  $Bin = "target/${{ matrix.target }}/release/$App${{ matrix.ext }}"
+                  if (-not (Test-Path $Bin)) { throw "Missing $Bin" }
+                  New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+                  Copy-Item $Bin -Destination "dist/$App-${{ matrix.os_tag }}${{ matrix.ext }}" -Force
+
+            - name: Upload artifacts (macOS)
+              if: ${{ startsWith(matrix.runner, 'macos') }}
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ env.BIN_NAME }}-${{ matrix.os_tag }}
+                  path: |
+                      dist/${{ env.APP_DISPLAY_NAME }}.app
+                      dist/${{ env.BIN_NAME }}-${{ matrix.os_tag }}.zip
+
+            - name: Upload artifacts (Linux)
+              if: ${{ startsWith(matrix.runner, 'ubuntu') }}
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ env.BIN_NAME }}-${{ matrix.os_tag }}
+                  path: |
+                      dist/${{ env.BIN_NAME }}-${{ matrix.os_tag }}.AppImage
+                      dist/${{ env.BIN_NAME }}-${{ matrix.os_tag }}.tar.gz
+                  if-no-files-found: ignore
+
+            - name: Upload artifacts (Windows)
+              if: startsWith(matrix.runner, 'windows')
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ env.BIN_NAME }}-${{ matrix.os_tag }}
+                  path: dist/${{ env.BIN_NAME }}-${{ matrix.os_tag }}${{ matrix.ext }}
