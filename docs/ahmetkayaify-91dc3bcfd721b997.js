@@ -250,11 +250,7 @@ export function worker_entry() {
 }
 
 function __wbg_adapter_54(arg0, arg1, arg2) {
-<<<<<<<< HEAD:docs/ahmetkayaify-513e7a62c3aebe16.js
-    wasm.closure165_externref_shim(arg0, arg1, arg2);
-========
     wasm.closure312_externref_shim(arg0, arg1, arg2);
->>>>>>>> 62cba6c (Restore ahmet-kayaify-main.zip contents):docs/ahmetkayaify-91dc3bcfd721b997.js
 }
 
 function __wbg_adapter_57(arg0, arg1) {
@@ -3134,30 +3130,6 @@ function __wbg_get_imports() {
         const ret = false;
         return ret;
     };
-<<<<<<<< HEAD:docs/ahmetkayaify-513e7a62c3aebe16.js
-    imports.wbg.__wbindgen_closure_wrapper1090 = function(arg0, arg1, arg2) {
-        const ret = makeMutClosure(arg0, arg1, 166, __wbg_adapter_54);
-        return ret;
-    };
-    imports.wbg.__wbindgen_closure_wrapper2433 = function(arg0, arg1, arg2) {
-        const ret = makeMutClosure(arg0, arg1, 593, __wbg_adapter_57);
-        return ret;
-    };
-    imports.wbg.__wbindgen_closure_wrapper3121 = function(arg0, arg1, arg2) {
-        const ret = makeMutClosure(arg0, arg1, 726, __wbg_adapter_60);
-        return ret;
-    };
-    imports.wbg.__wbindgen_closure_wrapper3123 = function(arg0, arg1, arg2) {
-        const ret = makeMutClosure(arg0, arg1, 726, __wbg_adapter_63);
-        return ret;
-    };
-    imports.wbg.__wbindgen_closure_wrapper3125 = function(arg0, arg1, arg2) {
-        const ret = makeMutClosure(arg0, arg1, 726, __wbg_adapter_60);
-        return ret;
-    };
-    imports.wbg.__wbindgen_closure_wrapper7869 = function(arg0, arg1, arg2) {
-        const ret = makeMutClosure(arg0, arg1, 2407, __wbg_adapter_68);
-========
     imports.wbg.__wbindgen_closure_wrapper1383 = function(arg0, arg1, arg2) {
         const ret = makeMutClosure(arg0, arg1, 313, __wbg_adapter_54);
         return ret;
@@ -3180,7 +3152,6 @@ function __wbg_get_imports() {
     };
     imports.wbg.__wbindgen_closure_wrapper7873 = function(arg0, arg1, arg2) {
         const ret = makeMutClosure(arg0, arg1, 2409, __wbg_adapter_68);
->>>>>>>> 62cba6c (Restore ahmet-kayaify-main.zip contents):docs/ahmetkayaify-91dc3bcfd721b997.js
         return ret;
     };
     imports.wbg.__wbindgen_debug_string = function(arg0, arg1) {
