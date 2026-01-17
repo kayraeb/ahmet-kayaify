@@ -35,6 +35,32 @@
     <link data-trunk rel="rust" data-wasm-opt="4" data-integrity="none"/>
     <!-- this is the base url relative to which other urls will be constructed. trunk will insert this from the public-url option -->
     <base data-trunk-public-url />
+    <script>
+        (function () {
+            const isGithubPages = location.hostname.endsWith('github.io');
+            const hasTrunkTemplate = !!document.querySelector('link[data-trunk][rel="rust"]');
+            if (!isGithubPages || !hasTrunkTemplate) {
+                return;
+            }
+
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.getRegistrations()
+                    .then((regs) => Promise.all(regs.map((reg) => reg.unregister())))
+                    .catch(() => {});
+            }
+
+            if (window.caches) {
+                caches.keys()
+                    .then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
+                    .catch(() => {});
+            }
+
+            const target = new URL('./docs/', location.href);
+            if (!location.pathname.includes('/docs/')) {
+                location.replace(target.toString());
+            }
+        })();
+    </script>
 
     <link data-trunk rel="icon" href="assets/favicon.ico" data-integrity="none">
 
@@ -264,9 +290,12 @@
     <script>
         // We disable caching during development so that we always view the latest version.
         if ('serviceWorker' in navigator && window.location.hash !== "#dev") {
-            window.addEventListener('load', function () {
-                navigator.serviceWorker.register('sw.js');
-            });
+            const hasTrunkTemplate = !!document.querySelector('link[data-trunk][rel="rust"]');
+            if (!hasTrunkTemplate) {
+                window.addEventListener('load', function () {
+                    navigator.serviceWorker.register('sw.js');
+                });
+            }
         }
 
         function addShareButton() {

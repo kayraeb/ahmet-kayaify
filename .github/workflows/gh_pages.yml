@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - docs/**
 # to only run when you do a new github release, comment out above part and uncomment the below trigger.
 # on:
 #   release:
@@ -31,6 +33,16 @@ jobs:
         run: wget -qO- https://github.com/thedodd/trunk/releases/latest/download/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xzf-
       - name: Build # build
         run: ./trunk build --release --public-url ./
+      - name: Clean stage output
+        run: rm -rf docs/.stage
+      - name: Disable Jekyll
+        run: touch docs/.nojekyll
+      - name: Commit docs build to main
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update docs build"
+          branch: main
+          file_pattern: docs
       - name: Deploy
         uses: JamesIves/github-pages-deploy-action@v4
         with:
